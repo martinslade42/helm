@@ -25,6 +25,8 @@ import (
 
 	"helm.sh/helm/v3/cmd/helm/require"
 	"helm.sh/helm/v3/pkg/action"
+	"helm.sh/helm/v3/pkg/cli/values"
+	"helm.sh/helm/v3/pkg/getter"
 )
 
 const showDesc = `
@@ -38,7 +40,29 @@ This command inspects a chart (directory, file, or URL) and displays all its con
 
 const showValuesDesc = `
 This command inspects a chart (directory, file, or URL) and displays the contents
-of the values.yaml file
+of the values.yaml file.
+
+Use the --all flag to display computed values after merging user-supplied values
+with the chart's defaults. This shows the exact values that would be used during
+template rendering.
+
+You can override values using:
+  -f/--values:      Specify values in a YAML file or a URL
+  --set:            Set values on the command line
+  --set-string:     Set STRING values on the command line
+  --set-file:       Set values from files
+  --set-json:       Set JSON values on the command line
+  --set-literal:    Set literal STRING values
+
+Examples:
+  # Show default values
+  $ helm show values mychart
+
+  # Show computed values with overrides
+  $ helm show values mychart --all -f myvalues.yaml --set replicas=3
+
+  # Show computed values with JSONPath filter
+  $ helm show values mychart --all --set replicas=5 --jsonpath='{.replicas}'
 `
 
 const showChartDesc = `
@@ -96,6 +120,9 @@ func newShowCmd(cfg *action.Configuration, out io.Writer) *cobra.Command {
 		},
 	}
 
+	// Create valueOpts for the values subcommand
+	valueOpts := &values.Options{}
+
 	valuesSubCmd := &cobra.Command{
 		Use:               "values [CHART]",
 		Short:             "show the chart's values",
@@ -108,6 +135,17 @@ func newShowCmd(cfg *action.Configuration, out io.Writer) *cobra.Command {
 			if err != nil {
 				return err
 			}
+
+			// Process values if --all flag is set
+			if client.ShowAll {
+				p := getter.All(settings)
+				vals, err := valueOpts.MergeValues(p)
+				if err != nil {
+					return err
+				}
+				client.ValueOpts = vals
+			}
+
 			output, err := runShow(args, client)
 			if err != nil {
 				return err
@@ -182,19 +220,29 @@ func newShowCmd(cfg *action.Configuration, out io.Writer) *cobra.Command {
 
 	cmds := []*cobra.Command{all, readmeSubCmd, valuesSubCmd, chartSubCmd, crdsSubCmd}
 	for _, subCmd := range cmds {
-		addShowFlags(subCmd, client)
+		if subCmd.Name() == "values" {
+			addShowFlags(subCmd, client, valueOpts)
+		} else {
+			addShowFlags(subCmd, client, nil)
+		}
 		showCommand.AddCommand(subCmd)
 	}
 
 	return showCommand
 }
 
-func addShowFlags(subCmd *cobra.Command, client *action.Show) {
+func addShowFlags(subCmd *cobra.Command, client *action.Show, valueOpts *values.Options) {
 	f := subCmd.Flags()
 
 	f.BoolVar(&client.Devel, "devel", false, "use development versions, too. Equivalent to version '>0.0.0-0'. If --version is set, this is ignored")
 	if subCmd.Name() == "values" {
 		f.StringVar(&client.JSONPathTemplate, "jsonpath", "", "supply a JSONPath expression to filter the output")
+		f.BoolVarP(&client.ShowAll, "all", "a", false, "show computed values (includes user-supplied values merged with defaults)")
+
+		// Add value override flags if valueOpts is provided
+		if valueOpts != nil {
+			addValueOptionsFlags(f, valueOpts)
+		}
 	}
 	addChartPathOptionsFlags(f, &client.ChartPathOptions)
 

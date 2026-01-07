@@ -62,6 +62,11 @@ type Show struct {
 	OutputFormat     ShowOutputFormat
 	JSONPathTemplate string
 	chart            *chart.Chart // for testing
+
+	// ShowAll enables displaying computed values (with user overrides merged)
+	ShowAll bool
+	// ValueOpts contains merged user-supplied values
+	ValueOpts map[string]interface{}
 }
 
 // NewShow creates a new Show object with the given configuration.
@@ -111,16 +116,43 @@ func (s *Show) Run(chartpath string) (string, error) {
 		if s.OutputFormat == ShowAll {
 			fmt.Fprintln(&out, "---")
 		}
+
+		var valuesToDisplay map[string]interface{}
+
+		// Compute merged values if ShowAll flag is set and user provided values
+		if s.ShowAll && s.ValueOpts != nil {
+			// Merge user values with chart defaults
+			merged := chartutil.CoalesceTables(s.ValueOpts, s.chart.Values)
+			// Coalesce with dependencies to get final computed values
+			computed, err := chartutil.CoalesceValues(s.chart, merged)
+			if err != nil {
+				return "", err
+			}
+			valuesToDisplay = computed
+		} else {
+			valuesToDisplay = s.chart.Values
+		}
+
 		if s.JSONPathTemplate != "" {
 			printer, err := printers.NewJSONPathPrinter(s.JSONPathTemplate)
 			if err != nil {
 				return "", errors.Wrapf(err, "error parsing jsonpath %s", s.JSONPathTemplate)
 			}
-			printer.Execute(&out, s.chart.Values)
+			printer.Execute(&out, valuesToDisplay)
 		} else {
-			for _, f := range s.chart.Raw {
-				if f.Name == chartutil.ValuesfileName {
-					fmt.Fprintln(&out, string(f.Data))
+			// When showing computed values, marshal the computed map
+			// Otherwise, show raw values.yaml file (preserves comments)
+			if s.ShowAll && s.ValueOpts != nil {
+				valuesYaml, err := yaml.Marshal(valuesToDisplay)
+				if err != nil {
+					return "", err
+				}
+				fmt.Fprint(&out, string(valuesYaml))
+			} else {
+				for _, f := range s.chart.Raw {
+					if f.Name == chartutil.ValuesfileName {
+						fmt.Fprintln(&out, string(f.Data))
+					}
 				}
 			}
 		}
